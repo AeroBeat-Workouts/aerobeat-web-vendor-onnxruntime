@@ -89,8 +89,8 @@ export const onnxRuntimeReplayCapabilities = Object.freeze({
 /**
  * @typedef {Object} RtmposeSessionLike
  * @property {(feeds: Record<string, unknown>) => Promise<Record<string, import("./rtmpose-decode.js").TensorOutputLike>>} run
- * @property {(() => Promise<void> | void) | undefined} release
- * @property {(() => Promise<void> | void) | undefined} dispose
+ * @property {() => Promise<void> | void} [release]
+ * @property {() => Promise<void> | void} [dispose]
  */
 /**
  * @typedef {Object} OnnxAdapterOptions
@@ -408,8 +408,29 @@ export function createOnnxRuntimeMockPoseAdapter(options = {}) {
 
 /** @param {OnnxExecutionProvider} provider @returns {Promise<RtmposeRuntimeLike>} */
 async function loadDefaultOnnxRuntime(provider) {
-  const runtime = provider === "webgpu" ? await import("onnxruntime-web/webgpu") : await import("onnxruntime-web");
-  return /** @type {RtmposeRuntimeLike} */ (/** @type {unknown} */ (runtime));
+  const ort = provider === "webgpu" ? await import("onnxruntime-web/webgpu") : await import("onnxruntime-web");
+  return {
+    Tensor: ort.Tensor,
+    InferenceSession: {
+      async create(modelBytes, options) {
+        const session = await ort.InferenceSession.create(
+          modelBytes,
+          /** @type {import("onnxruntime-web").InferenceSession.SessionOptions} */ (options)
+        );
+        return {
+          async run(feeds) {
+            const outputs = await session.run(
+              /** @type {import("onnxruntime-web").InferenceSession.FeedsType} */ (/** @type {unknown} */ (feeds))
+            );
+            return /** @type {Record<string, import("./rtmpose-decode.js").TensorOutputLike>} */ (/** @type {unknown} */ (outputs));
+          },
+          release() {
+            return session.release();
+          }
+        };
+      }
+    }
+  };
 }
 
 /** @param {RtmposeRuntimeLike} runtime @param {Uint8Array} modelBytes @param {OnnxExecutionProvider} provider */

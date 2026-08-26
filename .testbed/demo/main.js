@@ -1,10 +1,15 @@
 // @ts-check
 
 import { createOnnxRuntimeMockPoseAdapter } from "../../src/index.js";
+import { preprocessRtmposeFrame } from "../../src/rtmpose-preprocess.js";
 
 const app = document.querySelector("#app");
 if (!(app instanceof HTMLElement)) {
   throw new Error("ONNX Runtime smoke root is missing.");
+}
+const imageDataPreprocess = await preprocessRtmposeFrame(new ImageData(480, 640));
+if (imageDataPreprocess.dimensions.join(",") !== "1,3,256,192") {
+  throw new Error("Generic ImageData preprocessing did not produce the RTMPose tensor shape.");
 }
 const adapter = createOnnxRuntimeMockPoseAdapter();
 await adapter.load();
