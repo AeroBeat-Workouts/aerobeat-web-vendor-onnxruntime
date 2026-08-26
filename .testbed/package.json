@@ -1,0 +1,6 @@
+{
+  "name": "@aerobeat/web-vendor-onnxruntime-testbed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module"
+}
