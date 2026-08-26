@@ -7,8 +7,12 @@ export {
   onnxRuntimeAdapterStatuses,
   onnxRuntimeCapabilities,
   onnxRuntimeLiveSourceId,
+  onnxRuntimeModel,
   onnxRuntimeModelId,
+  onnxRuntimePackageVersion,
+  onnxRuntimeReplayCapabilities,
   onnxRuntimeReplayFixtureId,
+  onnxRuntimeReplayModel,
   onnxRuntimeVendorId
 } from "./onnxruntime-adapter.js";
 

@@ -1,6 +1,7 @@
 // @ts-check
 
 import assert from "node:assert/strict";
+import { poseAdapterContractsId } from "@aerobeat/web-contracts/pose-adapter";
 
 import {
   createOnnxRuntimeMockPoseAdapter,
@@ -19,8 +20,9 @@ import { computeFullFrameRtmposeCrop, convertRgbaToNormalizedNchw, preprocessRtm
 
 const publicAdapter = createOnnxRuntimePoseAdapter({ modelBytes: new Uint8Array([1]) });
 assert.equal(publicAdapter.vendorId, onnxRuntimeVendorId);
+assert.equal(poseAdapterContractsId, "aero.contracts.pose-adapter");
 assert.equal(publicAdapter.status, onnxRuntimeAdapterStatuses.idle);
-assert.deepEqual(publicAdapter.capabilities.executionProviders, ["webgpu", "wasm"]);
+assertAeroPoseAdapterContract(publicAdapter, ["webgpu", "wasm"]);
 assert.equal(rtmposeModelByteLength, 13350364);
 assert.equal(rtmposeModelSha256, "a6c2f6a3896a4d51131d14d7a80a3d08b50f559af5a58a45d5b098aef510a70f");
 assert.equal(publicAdapter.getTelemetryStatus().expectedModelSha256, rtmposeModelSha256);
@@ -109,6 +111,14 @@ assert.equal(liveFrame.mirrored, false);
 assert.equal(liveFrame.landmarks.length, 7);
 assert.equal("rawScores" in liveFrame, false);
 assert.equal(liveAdapter.getTelemetryStatus().inferenceCount, 1);
+assert.deepEqual(liveAdapter.getExecutionTelemetry(), {
+  location: "main-thread",
+  provider: "webgpu",
+  detail: "webgpu session ready",
+  fallback: false,
+  loadDurationMs: 5,
+  estimateDurationMs: 5
+});
 assert.equal(primaryRecord.lastFeed?.input?.dimensions.join(","), "1,3,256,192");
 await liveAdapter.dispose();
 assert.equal(liveAdapter.status, onnxRuntimeAdapterStatuses.disposed);
@@ -127,6 +137,10 @@ assert.equal(fallbackAdapter.getExecutionStatus().mode, "fallback");
 assert.equal(fallbackAdapter.getExecutionStatus().actualProvider, "wasm");
 assert.match(fallbackAdapter.getExecutionStatus().detail, /explicit wasm fallback/u);
 assert.equal(fallbackAdapter.getTelemetryStatus().fallbackUsed, true);
+assert.equal(fallbackAdapter.getExecutionTelemetry().location, "main-thread");
+assert.equal(fallbackAdapter.getExecutionTelemetry().provider, "wasm");
+assert.equal(fallbackAdapter.getExecutionTelemetry().fallback, true);
+assert.equal(fallbackAdapter.getExecutionTelemetry().loadDurationMs, 5);
 
 const strictRecord = createFakeDependencies({ failProvider: "webgpu" });
 const strictAdapter = createOnnxRuntimePoseAdapterFromDependencies({
@@ -138,25 +152,65 @@ const strictAdapter = createOnnxRuntimePoseAdapterFromDependencies({
 await assert.rejects(() => strictAdapter.load(), /webgpu session unavailable/u);
 assert.equal(strictAdapter.status, onnxRuntimeAdapterStatuses.failed);
 assert.equal(strictAdapter.getExecutionStatus().mode, "unavailable");
+assert.equal(strictAdapter.getExecutionTelemetry().loadDurationMs, 5);
 
 const inferenceRecord = createFakeDependencies({ failInference: true });
 const inferenceAdapter = createOnnxRuntimePoseAdapterFromDependencies({ modelBytes: new Uint8Array([1]), ...inferenceRecord.options });
 await inferenceAdapter.load();
 await assert.rejects(() => inferenceAdapter.estimateNormalizedPoseFrame(/** @type {CanvasImageSource & Record<string, unknown>} */ (/** @type {unknown} */ ({ width: 480, height: 640 }))), /inference failed/u);
 assert.equal(inferenceAdapter.status, onnxRuntimeAdapterStatuses.failed);
+assert.equal(inferenceAdapter.getExecutionTelemetry().estimateDurationMs, 5);
 
 const noModelAdapter = createOnnxRuntimePoseAdapterFromDependencies({ ...createFakeDependencies().options });
 await assert.rejects(() => noModelAdapter.load(), /model bytes are required/u);
 
 const mock = createOnnxRuntimeMockPoseAdapter();
+assertAeroPoseAdapterContract(mock, ["replay"]);
 await mock.load();
-const mockFrame = await mock.estimateNormalizedPoseFrame();
+const mockFrame = await mock.estimateNormalizedPoseFrame(undefined, {
+  sourceId: "contract.mock",
+  timestampMs: 42,
+  mirrored: false,
+  frameWidth: 480,
+  frameHeight: 640,
+  flipHorizontal: true
+});
+assert.equal(mockFrame.sourceId, "contract.mock");
+assert.equal(mockFrame.timestampMs, 42);
+assert.equal(mockFrame.mirrored, false);
 assert.equal(mockFrame.landmarks.length, 7);
 assert.equal(mock.getExecutionStatus().detail, "deterministic replay");
+assert.equal(mock.getExecutionTelemetry().location, "main-thread");
+assert.equal(mock.getExecutionTelemetry().provider, "replay");
+assert.equal(mock.getExecutionTelemetry().fallback, true);
+assertNonNegativeTiming(mock.getExecutionTelemetry().loadDurationMs);
+assertNonNegativeTiming(mock.getExecutionTelemetry().estimateDurationMs);
 await mock.dispose();
 assert.equal(mock.status, onnxRuntimeAdapterStatuses.disposed);
 
 console.log("ONNX Runtime adapter validation passed.");
+
+/**
+ * @param {import("@aerobeat/web-contracts/pose-adapter").AeroPoseAdapter} adapter
+ * @param {readonly string[]} providers
+ */
+function assertAeroPoseAdapterContract(adapter, providers) {
+  assert.equal(adapter.vendorId, adapter.model.vendorId);
+  assert.equal(typeof adapter.model.modelId, "string");
+  assert.equal(typeof adapter.model.runtimeId, "string");
+  assert.equal(adapter.capabilities?.supportsMainThread, true);
+  assert.equal(adapter.capabilities?.supportsWorker, false);
+  assert.equal(adapter.capabilities?.supportsMirroring, true);
+  assert.equal(adapter.capabilities?.supportsFrameSizeOverride, true);
+  assert.deepEqual(adapter.capabilities?.executionProviders, providers);
+  assert.equal(typeof adapter.getExecutionTelemetry, "function");
+}
+
+/** @param {number | undefined} value */
+function assertNonNegativeTiming(value) {
+  assert.equal(typeof value, "number");
+  assert.ok((value ?? -1) >= 0);
+}
 
 function createSimccOutputs() {
   const x = new Float32Array(17 * rtmposeSimccXLength).fill(-1);

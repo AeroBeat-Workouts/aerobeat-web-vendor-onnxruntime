@@ -8,6 +8,7 @@ assert.doesNotMatch(publicIndex, /onnxruntime-web|fflate/u, "Public index must n
 assert.doesNotMatch(publicIndex, /FromDependencies|preprocess|decodeRtmposeSimcc/u, "Internal injection and tensor helpers must remain private exports.");
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 assert.equal(packageJson.exports["."], "./src/index.js");
+assert.equal(packageJson.dependencies["@aerobeat/web-contracts"], "file:../aerobeat-web-contracts");
 assert.equal(packageJson.dependencies["onnxruntime-web"], "1.29.0");
 assert.equal(packageJson.dependencies.fflate, "0.8.2");
 console.log("Public import-boundary validation passed.");

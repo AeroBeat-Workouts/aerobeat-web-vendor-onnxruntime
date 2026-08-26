@@ -8,6 +8,23 @@ export const onnxRuntimeVendorId = "onnxruntime";
 export const onnxRuntimeLiveSourceId = "aero.onnxruntime.rtmpose.live";
 export const onnxRuntimeReplayFixtureId = "aero.onnxruntime.rtmpose.replay.basic-upper-body";
 export const onnxRuntimeModelId = "openmmlab.rtmpose-t.body7.256x192.fp32";
+export const onnxRuntimePackageVersion = "1.29.0";
+/** @type {Readonly<import("@aerobeat/web-contracts/pose-adapter").AeroPoseModelIdentity>} */
+export const onnxRuntimeModel = Object.freeze({
+  vendorId: onnxRuntimeVendorId,
+  modelId: onnxRuntimeModelId,
+  modelVersion: "026a1439_20230504",
+  runtimeId: "onnxruntime-web",
+  runtimeVersion: onnxRuntimePackageVersion
+});
+/** @type {Readonly<import("@aerobeat/web-contracts/pose-adapter").AeroPoseModelIdentity>} */
+export const onnxRuntimeReplayModel = Object.freeze({
+  vendorId: onnxRuntimeVendorId,
+  modelId: "deterministic-replay",
+  modelVersion: "1",
+  runtimeId: "aerobeat-replay",
+  runtimeVersion: "1"
+});
 export const onnxRuntimeAdapterStatuses = Object.freeze({
   idle: "idle",
   loading: "loading",
@@ -16,6 +33,10 @@ export const onnxRuntimeAdapterStatuses = Object.freeze({
   disposed: "disposed"
 });
 export const onnxRuntimeCapabilities = Object.freeze({
+  supportsMainThread: true,
+  supportsWorker: false,
+  supportsMirroring: true,
+  supportsFrameSizeOverride: true,
   executionProviders: Object.freeze(["webgpu", "wasm"]),
   input: Object.freeze({ width: rtmposeInputWidth, height: rtmposeInputHeight, layout: "NCHW", type: "float32", color: "RGB" }),
   outputLandmarks: rtmposeLandmarkNames,
@@ -23,7 +44,19 @@ export const onnxRuntimeCapabilities = Object.freeze({
   fullFrameAssumption: "single person, controlled full-frame top-down crop, 1.25 scale; no person detector",
   deterministicReplay: true
 });
+export const onnxRuntimeReplayCapabilities = Object.freeze({
+  supportsMainThread: true,
+  supportsWorker: false,
+  supportsMirroring: true,
+  supportsFrameSizeOverride: true,
+  executionProviders: Object.freeze(["replay"]),
+  deterministicReplay: true
+});
 
+/** @typedef {import("@aerobeat/web-contracts/pose-shapes").NormalizedPoseFrame} NormalizedPoseFrame */
+/** @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseFrameSource} AeroPoseFrameSource */
+/** @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseExecutionTelemetry} AeroPoseExecutionTelemetry */
+/** @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseModelIdentity} AeroPoseModelIdentity */
 /** @typedef {"webgpu" | "wasm"} OnnxExecutionProvider */
 /**
  * @typedef {Object} OnnxExecutionStatus
@@ -61,47 +94,36 @@ export const onnxRuntimeCapabilities = Object.freeze({
  */
 /**
  * @typedef {Object} OnnxAdapterOptions
- * @property {OnnxExecutionProvider | undefined} executionProvider
- * @property {OnnxExecutionProvider | null | undefined} fallbackExecutionProvider
- * @property {Uint8Array | ArrayBuffer | undefined} modelBytes
- * @property {string | URL | undefined} modelAssetUrl
- * @property {typeof fetch | undefined} fetch
- * @property {(provider: OnnxExecutionProvider) => Promise<RtmposeRuntimeLike>} runtimeLoader
- * @property {(runtime: RtmposeRuntimeLike, modelBytes: Uint8Array, provider: OnnxExecutionProvider) => Promise<RtmposeSessionLike>} sessionFactory
- * @property {(options: import("./model-loader.js").SameOriginModelLoadOptions) => Promise<{ modelBytes: Uint8Array, source: "injected" | "same-origin", modelAssetUrl?: string }>} modelLoader
- * @property {typeof preprocessRtmposeFrame} preprocessFrame
- * @property {typeof decodeRtmposeSimcc} decodeOutputs
- * @property {() => number} now
- * @property {string | undefined} sourceId
- * @property {boolean | undefined} mirrored
- * @property {string | undefined} inputName
+ * @property {OnnxExecutionProvider} [executionProvider]
+ * @property {OnnxExecutionProvider | null} [fallbackExecutionProvider]
+ * @property {Uint8Array | ArrayBuffer} [modelBytes]
+ * @property {string | URL} [modelAssetUrl]
+ * @property {typeof fetch} [fetch]
+ * @property {(provider: OnnxExecutionProvider) => Promise<RtmposeRuntimeLike>} [runtimeLoader]
+ * @property {(runtime: RtmposeRuntimeLike, modelBytes: Uint8Array, provider: OnnxExecutionProvider) => Promise<RtmposeSessionLike>} [sessionFactory]
+ * @property {(options: import("./model-loader.js").SameOriginModelLoadOptions) => Promise<{ modelBytes: Uint8Array, source: "injected" | "same-origin", modelAssetUrl?: string }>} [modelLoader]
+ * @property {typeof preprocessRtmposeFrame} [preprocessFrame]
+ * @property {typeof decodeRtmposeSimcc} [decodeOutputs]
+ * @property {() => number} [now]
+ * @property {string} [sourceId]
+ * @property {boolean} [mirrored]
+ * @property {string} [inputName]
  */
 /**
- * @typedef {Object} EstimateOptions
- * @property {string | undefined} sourceId
- * @property {number | undefined} timestampMs
- * @property {boolean | undefined} mirrored
- * @property {number | undefined} frameWidth
- * @property {number | undefined} frameHeight
- * @property {() => import("./rtmpose-preprocess.js").CanvasLike | undefined} canvasFactory
+ * @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseEstimateOptions & {
+ *   canvasFactory?: () => import("./rtmpose-preprocess.js").CanvasLike | undefined
+ * }} EstimateOptions
  */
 /**
- * @typedef {Object} NormalizedPoseFrame
- * @property {string} sourceId
- * @property {number} timestampMs
- * @property {boolean} mirrored
- * @property {Array<{ name: string, x: number, y: number, confidence: number }>} landmarks
- */
-/**
- * @typedef {Object} OnnxRuntimePoseAdapter
- * @property {"onnxruntime"} vendorId
- * @property {string} status
- * @property {typeof onnxRuntimeCapabilities} capabilities
- * @property {() => Promise<void>} load
- * @property {(frameSource?: CanvasImageSource & Record<string, unknown>, options?: EstimateOptions) => Promise<NormalizedPoseFrame>} estimateNormalizedPoseFrame
- * @property {() => OnnxExecutionStatus} getExecutionStatus
- * @property {() => OnnxTelemetryStatus} getTelemetryStatus
- * @property {() => Promise<void>} dispose
+ * @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseAdapter & {
+ *   vendorId: "onnxruntime",
+ *   model: Readonly<AeroPoseModelIdentity>,
+ *   capabilities: typeof onnxRuntimeCapabilities | typeof onnxRuntimeReplayCapabilities,
+ *   getExecutionTelemetry: () => AeroPoseExecutionTelemetry,
+ *   getExecutionStatus: () => OnnxExecutionStatus,
+ *   getTelemetryStatus: () => OnnxTelemetryStatus,
+ *   dispose: () => Promise<void>
+ * }} OnnxRuntimePoseAdapter
  */
 
 /** @param {OnnxAdapterOptions} [options] @returns {OnnxRuntimePoseAdapter} */
@@ -129,6 +151,7 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
   const defaultMirrored = options.mirrored ?? true;
   const inputName = options.inputName ?? "input";
 
+  /** @type {import("@aerobeat/web-contracts/pose-adapter").AeroPoseAdapterLifecycleStatus} */
   let status = onnxRuntimeAdapterStatuses.idle;
   /** @type {RtmposeRuntimeLike | undefined} */
   let runtime;
@@ -162,10 +185,21 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
 
   return {
     vendorId: onnxRuntimeVendorId,
+    model: onnxRuntimeModel,
     get status() {
       return status;
     },
     capabilities: onnxRuntimeCapabilities,
+    getExecutionTelemetry() {
+      return {
+        location: "main-thread",
+        provider: executionStatus.actualProvider,
+        detail: executionStatus.detail,
+        fallback: executionStatus.mode === "fallback",
+        loadDurationMs: telemetry.loadDurationMs,
+        estimateDurationMs: telemetry.lastInferenceDurationMs
+      };
+    },
     getExecutionStatus() {
       return { ...executionStatus };
     },
@@ -232,6 +266,7 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
       if (!frameSource) {
         throw new Error("ONNX Runtime pose estimation requires a browser frame source.");
       }
+      const onnxEstimateOptions = /** @type {EstimateOptions} */ (estimateOptions);
       if (status !== onnxRuntimeAdapterStatuses.ready) {
         await this.load();
       }
@@ -242,9 +277,9 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
       const startedAt = now();
       try {
         const preprocessed = await preprocessFrame(frameSource, {
-          frameWidth: estimateOptions.frameWidth,
-          frameHeight: estimateOptions.frameHeight,
-          canvasFactory: estimateOptions.canvasFactory
+          frameWidth: onnxEstimateOptions.frameWidth,
+          frameHeight: onnxEstimateOptions.frameHeight,
+          canvasFactory: onnxEstimateOptions.canvasFactory
         });
         const inputTensor = new runtime.Tensor("float32", preprocessed.data, preprocessed.dimensions);
         const outputs = await session.run({ [inputName]: inputTensor });
@@ -253,9 +288,9 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
         telemetry.lastInferenceDurationMs = now() - startedAt;
         telemetry.inferenceCount += 1;
         return {
-          sourceId: estimateOptions.sourceId ?? defaultSourceId,
-          timestampMs: estimateOptions.timestampMs ?? readFrameTimestamp(frameSource) ?? now(),
-          mirrored: estimateOptions.mirrored ?? defaultMirrored,
+          sourceId: onnxEstimateOptions.sourceId ?? defaultSourceId,
+          timestampMs: onnxEstimateOptions.timestampMs ?? readFrameTimestamp(frameSource) ?? now(),
+          mirrored: onnxEstimateOptions.mirrored ?? defaultMirrored,
           landmarks: decoded.landmarks.map((landmark) => ({ ...landmark }))
         };
       } catch (error) {
@@ -301,19 +336,35 @@ export function createOnnxRuntimeReplayPoseSource() {
 export function createOnnxRuntimeMockPoseAdapter(options = {}) {
   const source = options.source ?? createOnnxRuntimeReplayPoseSource();
   let cursor = 0;
+  /** @type {import("@aerobeat/web-contracts/pose-adapter").AeroPoseAdapterLifecycleStatus} */
   let status = onnxRuntimeAdapterStatuses.idle;
+  /** @type {number | undefined} */
+  let loadDurationMs;
+  /** @type {number | undefined} */
+  let estimateDurationMs;
   return {
     vendorId: onnxRuntimeVendorId,
+    model: onnxRuntimeReplayModel,
     get status() {
       return status;
     },
-    capabilities: onnxRuntimeCapabilities,
+    capabilities: onnxRuntimeReplayCapabilities,
+    getExecutionTelemetry() {
+      return {
+        location: "main-thread",
+        provider: "replay",
+        detail: "deterministic replay fixture",
+        fallback: true,
+        loadDurationMs,
+        estimateDurationMs
+      };
+    },
     getExecutionStatus() {
       return { requestedProvider: "wasm", actualProvider: "wasm", mode: "requested", detail: "deterministic replay" };
     },
     getTelemetryStatus() {
       return {
-        modelId: onnxRuntimeModelId,
+        modelId: onnxRuntimeReplayModel.modelId,
         modelFilename: rtmposeModelFilename,
         archiveUrl: rtmposeOfficialArchiveUrl,
         archiveSha256: rtmposeOfficialArchiveSha256,
@@ -322,25 +373,32 @@ export function createOnnxRuntimeMockPoseAdapter(options = {}) {
         loadedModelByteLength: 0,
         modelSource: "injected",
         modelAssetUrl: undefined,
-        loadDurationMs: 0,
-        lastInferenceDurationMs: 0,
+        loadDurationMs,
+        lastInferenceDurationMs: estimateDurationMs,
         inferenceCount: cursor,
-        fallbackUsed: false
+        fallbackUsed: true
       };
     },
     async load() {
       if (status === onnxRuntimeAdapterStatuses.disposed) {
         throw new Error("Disposed ONNX Runtime mock adapter cannot be loaded.");
       }
+      const startedAt = defaultNow();
       status = onnxRuntimeAdapterStatuses.ready;
+      loadDurationMs = defaultNow() - startedAt;
     },
-    async estimateNormalizedPoseFrame() {
+    async estimateNormalizedPoseFrame(_frameSource, estimateOptions = {}) {
       if (status !== onnxRuntimeAdapterStatuses.ready) {
         await this.load();
       }
-      const frame = source.frames[cursor % source.frames.length];
+      const startedAt = defaultNow();
+      const frame = cloneFrame(source.frames[cursor % source.frames.length]);
       cursor += 1;
-      return cloneFrame(frame);
+      frame.sourceId = estimateOptions.sourceId ?? frame.sourceId;
+      frame.timestampMs = estimateOptions.timestampMs ?? frame.timestampMs;
+      frame.mirrored = estimateOptions.mirrored ?? frame.mirrored;
+      estimateDurationMs = defaultNow() - startedAt;
+      return frame;
     },
     async dispose() {
       status = onnxRuntimeAdapterStatuses.disposed;
@@ -350,7 +408,8 @@ export function createOnnxRuntimeMockPoseAdapter(options = {}) {
 
 /** @param {OnnxExecutionProvider} provider @returns {Promise<RtmposeRuntimeLike>} */
 async function loadDefaultOnnxRuntime(provider) {
-  return provider === "webgpu" ? import("onnxruntime-web/webgpu") : import("onnxruntime-web");
+  const runtime = provider === "webgpu" ? await import("onnxruntime-web/webgpu") : await import("onnxruntime-web");
+  return /** @type {RtmposeRuntimeLike} */ (/** @type {unknown} */ (runtime));
 }
 
 /** @param {RtmposeRuntimeLike} runtime @param {Uint8Array} modelBytes @param {OnnxExecutionProvider} provider */
@@ -366,9 +425,10 @@ function defaultNow() {
   return globalThis.performance?.now?.() ?? Date.now();
 }
 
-/** @param {CanvasImageSource & Record<string, unknown>} frameSource @returns {number | undefined} */
+/** @param {AeroPoseFrameSource} frameSource @returns {number | undefined} */
 function readFrameTimestamp(frameSource) {
-  return typeof frameSource.currentTime === "number" ? frameSource.currentTime * 1000 : undefined;
+  const mediaLike = /** @type {{ currentTime?: unknown }} */ (frameSource);
+  return typeof mediaLike.currentTime === "number" ? mediaLike.currentTime * 1000 : undefined;
 }
 
 /** @param {unknown} error @returns {string} */

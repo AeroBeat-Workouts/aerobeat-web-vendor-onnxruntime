@@ -45,9 +45,9 @@ export function computeFullFrameRtmposeCrop(sourceWidth, sourceHeight) {
 
 /**
  * @typedef {Object} RtmposePreprocessOptions
- * @property {number | undefined} frameWidth
- * @property {number | undefined} frameHeight
- * @property {() => HTMLCanvasElement | OffscreenCanvas | CanvasLike | undefined} canvasFactory
+ * @property {number} [frameWidth]
+ * @property {number} [frameHeight]
+ * @property {() => HTMLCanvasElement | OffscreenCanvas | CanvasLike | undefined} [canvasFactory]
  */
 
 /**
@@ -74,12 +74,13 @@ export function computeFullFrameRtmposeCrop(sourceWidth, sourceHeight) {
  */
 
 /**
- * @param {CanvasImageSource & Record<string, unknown>} frameSource
+ * @param {import("@aerobeat/web-contracts/pose-adapter").AeroPoseFrameSource} frameSource
  * @param {RtmposePreprocessOptions} [options]
  * @returns {Promise<RtmposePreprocessResult>}
  */
 export async function preprocessRtmposeFrame(frameSource, options = {}) {
-  const sourceDimensions = getFrameDimensions(frameSource, options);
+  const frameProperties = /** @type {Record<string, unknown>} */ (/** @type {unknown} */ (frameSource));
+  const sourceDimensions = getFrameDimensions(frameProperties, options);
   const crop = computeFullFrameRtmposeCrop(sourceDimensions.width, sourceDimensions.height);
   const canvas = options.canvasFactory?.() ?? createBrowserCanvas();
   if (!canvas) {
@@ -93,14 +94,19 @@ export async function preprocessRtmposeFrame(frameSource, options = {}) {
   }
   context.fillStyle = "rgb(0, 0, 0)";
   context.fillRect(0, 0, rtmposeInputWidth, rtmposeInputHeight);
-  drawCropIntersection(context, frameSource, crop, sourceDimensions);
-  const pixels = context.getImageData(0, 0, rtmposeInputWidth, rtmposeInputHeight).data;
-  return {
-    data: convertRgbaToNormalizedNchw(pixels),
-    dimensions: [1, 3, 256, 192],
-    crop,
-    sourceDimensions
-  };
+  const drawable = await getDrawableFrameSource(frameSource);
+  try {
+    drawCropIntersection(context, drawable.source, crop, sourceDimensions);
+    const pixels = context.getImageData(0, 0, rtmposeInputWidth, rtmposeInputHeight).data;
+    return {
+      data: convertRgbaToNormalizedNchw(pixels),
+      dimensions: [1, 3, 256, 192],
+      crop,
+      sourceDimensions
+    };
+  } finally {
+    drawable.release?.();
+  }
 }
 
 /**
@@ -120,6 +126,21 @@ export function convertRgbaToNormalizedNchw(pixels) {
     output[pixelCount * 2 + index] = (pixels[rgbaIndex + 2] - rtmposeChannelMean[2]) / rtmposeChannelStd[2];
   }
   return output;
+}
+
+/**
+ * @param {import("@aerobeat/web-contracts/pose-adapter").AeroPoseFrameSource} frameSource
+ * @returns {Promise<{ source: CanvasImageSource, release?: () => void }>}
+ */
+async function getDrawableFrameSource(frameSource) {
+  if (typeof ImageData === "function" && frameSource instanceof ImageData) {
+    if (typeof createImageBitmap !== "function") {
+      throw new Error("ImageData preprocessing requires createImageBitmap support.");
+    }
+    const bitmap = await createImageBitmap(frameSource);
+    return { source: bitmap, release: () => bitmap.close() };
+  }
+  return { source: /** @type {CanvasImageSource} */ (frameSource) };
 }
 
 /** @returns {HTMLCanvasElement | OffscreenCanvas | undefined} */
