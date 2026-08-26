@@ -157,6 +157,13 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
   let runtime;
   /** @type {RtmposeSessionLike | undefined} */
   let session;
+  /** @type {Promise<void> | undefined} */
+  let loading;
+  /** @type {Promise<void> | undefined} */
+  let disposing;
+  let disposed = false;
+  /** @type {WeakSet<RtmposeSessionLike>} */
+  const releasedSessions = new WeakSet();
   /** @type {Array<{ x: number, y: number }>} */
   let lastRawScores = [];
   /** @type {OnnxExecutionStatus} */
@@ -182,6 +189,24 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
     inferenceCount: 0,
     fallbackUsed: false
   };
+
+  /** @param {RtmposeSessionLike | undefined} target */
+  async function releaseSessionOnce(target) {
+    if (!target || releasedSessions.has(target)) {
+      return;
+    }
+    releasedSessions.add(target);
+    if (target.release) {
+      await target.release();
+    } else if (target.dispose) {
+      await target.dispose();
+    }
+  }
+
+  /** @param {string} action */
+  function disposedError(action) {
+    return new Error(`Disposed ONNX Runtime adapter cannot ${action}.`);
+  }
 
   return {
     vendorId: onnxRuntimeVendorId,
@@ -210,59 +235,109 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
       if (status === onnxRuntimeAdapterStatuses.ready) {
         return;
       }
-      if (status === onnxRuntimeAdapterStatuses.disposed) {
-        throw new Error("Disposed ONNX Runtime adapter cannot be loaded.");
+      if (disposed || status === onnxRuntimeAdapterStatuses.disposed) {
+        throw disposedError("be loaded");
+      }
+      if (loading) {
+        return loading;
       }
       status = onnxRuntimeAdapterStatuses.loading;
       const startedAt = now();
-      try {
-        const loaded = await modelLoader({
-          modelBytes: options.modelBytes,
-          modelAssetUrl: options.modelAssetUrl,
-          fetchImpl: options.fetch,
-          location: globalThis.location
-        });
-        telemetry.loadedModelByteLength = loaded.modelBytes.byteLength;
-        telemetry.modelSource = loaded.source;
-        telemetry.modelAssetUrl = loaded.modelAssetUrl;
+      const loadOperation = (async () => {
         try {
-          runtime = await runtimeLoader(requestedProvider);
-          session = await sessionFactory(runtime, loaded.modelBytes, requestedProvider);
-          executionStatus = {
-            requestedProvider,
-            actualProvider: requestedProvider,
-            mode: "requested",
-            detail: `${requestedProvider} session ready`
-          };
-        } catch (primaryError) {
-          if (!fallbackProvider || fallbackProvider === requestedProvider) {
-            throw primaryError;
+          const loaded = await modelLoader({
+            modelBytes: options.modelBytes,
+            modelAssetUrl: options.modelAssetUrl,
+            fetchImpl: options.fetch,
+            location: globalThis.location
+          });
+          if (disposed) {
+            throw disposedError("finish loading");
           }
-          runtime = await runtimeLoader(fallbackProvider);
-          session = await sessionFactory(runtime, loaded.modelBytes, fallbackProvider);
-          telemetry.fallbackUsed = true;
-          executionStatus = {
-            requestedProvider,
-            actualProvider: fallbackProvider,
-            mode: "fallback",
-            detail: `${requestedProvider} unavailable: ${readErrorMessage(primaryError)}; using explicit ${fallbackProvider} fallback`
-          };
+
+          /** @type {RtmposeRuntimeLike | undefined} */
+          let loadedRuntime;
+          /** @type {RtmposeSessionLike | undefined} */
+          let loadedSession;
+          /** @type {OnnxExecutionStatus} */
+          let loadedExecutionStatus;
+          let fallbackUsed = false;
+          try {
+            loadedRuntime = await runtimeLoader(requestedProvider);
+            if (disposed) {
+              throw disposedError("finish loading");
+            }
+            loadedSession = await sessionFactory(loadedRuntime, loaded.modelBytes, requestedProvider);
+            if (disposed) {
+              await releaseSessionOnce(loadedSession);
+              throw disposedError("finish loading");
+            }
+            loadedExecutionStatus = {
+              requestedProvider,
+              actualProvider: requestedProvider,
+              mode: "requested",
+              detail: `${requestedProvider} session ready`
+            };
+          } catch (primaryError) {
+            if (disposed || !fallbackProvider || fallbackProvider === requestedProvider) {
+              throw primaryError;
+            }
+            loadedRuntime = await runtimeLoader(fallbackProvider);
+            if (disposed) {
+              throw disposedError("finish loading");
+            }
+            loadedSession = await sessionFactory(loadedRuntime, loaded.modelBytes, fallbackProvider);
+            if (disposed) {
+              await releaseSessionOnce(loadedSession);
+              throw disposedError("finish loading");
+            }
+            fallbackUsed = true;
+            loadedExecutionStatus = {
+              requestedProvider,
+              actualProvider: fallbackProvider,
+              mode: "fallback",
+              detail: `${requestedProvider} unavailable: ${readErrorMessage(primaryError)}; using explicit ${fallbackProvider} fallback`
+            };
+          }
+
+          if (disposed) {
+            await releaseSessionOnce(loadedSession);
+            throw disposedError("finish loading");
+          }
+          runtime = loadedRuntime;
+          session = loadedSession;
+          executionStatus = loadedExecutionStatus;
+          telemetry.loadedModelByteLength = loaded.modelBytes.byteLength;
+          telemetry.modelSource = loaded.source;
+          telemetry.modelAssetUrl = loaded.modelAssetUrl;
+          telemetry.fallbackUsed = fallbackUsed;
+          status = onnxRuntimeAdapterStatuses.ready;
+          telemetry.loadDurationMs = now() - startedAt;
+        } catch (error) {
+          if (!disposed) {
+            status = onnxRuntimeAdapterStatuses.failed;
+            executionStatus = {
+              requestedProvider,
+              actualProvider: undefined,
+              mode: "unavailable",
+              detail: `load failed: ${readErrorMessage(error)}`
+            };
+            telemetry.loadDurationMs = now() - startedAt;
+          }
+          throw error;
+        } finally {
+          if (loading === loadOperation) {
+            loading = undefined;
+          }
         }
-        status = onnxRuntimeAdapterStatuses.ready;
-        telemetry.loadDurationMs = now() - startedAt;
-      } catch (error) {
-        status = onnxRuntimeAdapterStatuses.failed;
-        executionStatus = {
-          requestedProvider,
-          actualProvider: undefined,
-          mode: "unavailable",
-          detail: `load failed: ${readErrorMessage(error)}`
-        };
-        telemetry.loadDurationMs = now() - startedAt;
-        throw error;
-      }
+      })();
+      loading = loadOperation;
+      return loadOperation;
     },
     async estimateNormalizedPoseFrame(frameSource, estimateOptions = {}) {
+      if (disposed || status === onnxRuntimeAdapterStatuses.disposed) {
+        throw disposedError("estimate pose");
+      }
       if (!frameSource) {
         throw new Error("ONNX Runtime pose estimation requires a browser frame source.");
       }
@@ -270,7 +345,12 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
       if (status !== onnxRuntimeAdapterStatuses.ready) {
         await this.load();
       }
-      if (!runtime || !session) {
+      if (disposed) {
+        throw disposedError("estimate pose");
+      }
+      const activeRuntime = runtime;
+      const activeSession = session;
+      if (!activeRuntime || !activeSession) {
         status = onnxRuntimeAdapterStatuses.failed;
         throw new Error("ONNX Runtime session is unavailable after load.");
       }
@@ -281,8 +361,14 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
           frameHeight: onnxEstimateOptions.frameHeight,
           canvasFactory: onnxEstimateOptions.canvasFactory
         });
-        const inputTensor = new runtime.Tensor("float32", preprocessed.data, preprocessed.dimensions);
-        const outputs = await session.run({ [inputName]: inputTensor });
+        if (disposed) {
+          throw disposedError("estimate pose");
+        }
+        const inputTensor = new activeRuntime.Tensor("float32", preprocessed.data, preprocessed.dimensions);
+        const outputs = await activeSession.run({ [inputName]: inputTensor });
+        if (disposed) {
+          throw disposedError("estimate pose");
+        }
         const decoded = decodeOutputs(outputs, preprocessed.crop, preprocessed.sourceDimensions);
         lastRawScores = decoded.rawScores;
         telemetry.lastInferenceDurationMs = now() - startedAt;
@@ -294,20 +380,18 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
           landmarks: decoded.landmarks.map((landmark) => ({ ...landmark }))
         };
       } catch (error) {
-        status = onnxRuntimeAdapterStatuses.failed;
-        telemetry.lastInferenceDurationMs = now() - startedAt;
+        if (!disposed) {
+          status = onnxRuntimeAdapterStatuses.failed;
+          telemetry.lastInferenceDurationMs = now() - startedAt;
+        }
         throw error;
       }
     },
     async dispose() {
-      if (session?.release) {
-        await session.release();
-      } else if (session?.dispose) {
-        await session.dispose();
+      if (disposing) {
+        return disposing;
       }
-      session = undefined;
-      runtime = undefined;
-      lastRawScores = [];
+      disposed = true;
       status = onnxRuntimeAdapterStatuses.disposed;
       executionStatus = {
         requestedProvider,
@@ -315,6 +399,18 @@ export function createOnnxRuntimePoseAdapterFromDependencies(options = {}) {
         mode: "unavailable",
         detail: "adapter disposed"
       };
+      const pendingLoad = loading;
+      const activeSession = session;
+      session = undefined;
+      runtime = undefined;
+      lastRawScores = [];
+      disposing = (async () => {
+        await releaseSessionOnce(activeSession);
+        if (pendingLoad) {
+          await pendingLoad.catch(() => undefined);
+        }
+      })();
+      return disposing;
     }
   };
 }

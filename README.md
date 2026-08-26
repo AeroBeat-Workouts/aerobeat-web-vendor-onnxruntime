@@ -17,6 +17,8 @@ This package owns ONNX Runtime Web loading, explicit execution-provider selectio
 
 Live and mock adapters structurally conform to `@aerobeat/web-contracts` commit `70b8b1b`'s generic `AeroPoseAdapter`: plain `vendorId`/`model` identity, lifecycle `status`, standard capability booleans plus `executionProviders`, `load()`, `estimateNormalizedPoseFrame()`, generic `getExecutionTelemetry()`, and `dispose()`. Generic telemetry reports actual main-thread location, actual provider, detail, visible fallback, and most recent load/estimate durations. Vendor-specific `getExecutionStatus()` and `getTelemetryStatus()` remain additive.
 
+Disposal is terminal and idempotent. Concurrent `load()` calls share one model/runtime/session operation. If disposal occurs while model or session creation is pending, the adapter remains disposed, rejects the pending load, releases any late-created session exactly once, and rejects all later load/estimate calls.
+
 Runtime objects, sessions, tensors, full SimCC arrays, and raw response scores remain private. Output contains exactly the seven normalized COCO points used by AeroBeat: nose, shoulders, elbows, and wrists.
 
 Runtime, model bytes/loader, fetch, session creation, preprocessing, decoding, and timing are injectable for deterministic tests.

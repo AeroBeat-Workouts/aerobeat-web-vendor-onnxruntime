@@ -121,8 +121,14 @@ assert.deepEqual(liveAdapter.getExecutionTelemetry(), {
 });
 assert.equal(primaryRecord.lastFeed?.input?.dimensions.join(","), "1,3,256,192");
 await liveAdapter.dispose();
+await liveAdapter.dispose();
 assert.equal(liveAdapter.status, onnxRuntimeAdapterStatuses.disposed);
 assert.equal(primaryRecord.releaseCount, 1);
+await assert.rejects(() => liveAdapter.load(), /disposed.*cannot be loaded/iu);
+await assert.rejects(
+  () => liveAdapter.estimateNormalizedPoseFrame(/** @type {CanvasImageSource & Record<string, unknown>} */ (/** @type {unknown} */ ({ width: 480, height: 640 }))),
+  /disposed.*cannot estimate pose/iu
+);
 
 const fallbackRecord = createFakeDependencies({ failProvider: "webgpu" });
 const fallbackAdapter = createOnnxRuntimePoseAdapterFromDependencies({
@@ -163,6 +169,86 @@ assert.equal(inferenceAdapter.getExecutionTelemetry().estimateDurationMs, 5);
 
 const noModelAdapter = createOnnxRuntimePoseAdapterFromDependencies({ ...createFakeDependencies().options });
 await assert.rejects(() => noModelAdapter.load(), /model bytes are required/u);
+
+const modelLoadGate = createDeferred();
+let deferredModelLoadCount = 0;
+let deferredModelRuntimeCount = 0;
+let deferredModelSessionCount = 0;
+const disposeDuringModelLoadAdapter = createOnnxRuntimePoseAdapterFromDependencies({
+  async modelLoader() {
+    deferredModelLoadCount += 1;
+    return modelLoadGate.promise;
+  },
+  async runtimeLoader() {
+    deferredModelRuntimeCount += 1;
+    return createFakeRuntime();
+  },
+  async sessionFactory() {
+    deferredModelSessionCount += 1;
+    return createReleasableSession(() => undefined);
+  }
+});
+const modelLoadOne = disposeDuringModelLoadAdapter.load();
+const modelLoadTwo = disposeDuringModelLoadAdapter.load();
+assert.equal(deferredModelLoadCount, 1);
+const modelLoadOneRejected = assert.rejects(modelLoadOne, /disposed.*cannot finish loading/iu);
+const modelLoadTwoRejected = assert.rejects(modelLoadTwo, /disposed.*cannot finish loading/iu);
+const modelDispose = disposeDuringModelLoadAdapter.dispose();
+assert.equal(disposeDuringModelLoadAdapter.status, onnxRuntimeAdapterStatuses.disposed);
+modelLoadGate.resolve({ modelBytes: new Uint8Array([1]), source: "injected" });
+await Promise.all([modelLoadOneRejected, modelLoadTwoRejected, modelDispose]);
+assert.equal(deferredModelLoadCount, 1);
+assert.equal(deferredModelRuntimeCount, 0);
+assert.equal(deferredModelSessionCount, 0);
+assert.equal(disposeDuringModelLoadAdapter.status, onnxRuntimeAdapterStatuses.disposed);
+await assert.rejects(() => disposeDuringModelLoadAdapter.load(), /disposed.*cannot be loaded/iu);
+await assert.rejects(
+  () => disposeDuringModelLoadAdapter.estimateNormalizedPoseFrame(/** @type {CanvasImageSource & Record<string, unknown>} */ (/** @type {unknown} */ ({ width: 480, height: 640 }))),
+  /disposed.*cannot estimate pose/iu
+);
+
+const sessionCreateGate = createDeferred();
+const sessionCreateStarted = createDeferred();
+let deferredSessionModelLoadCount = 0;
+let deferredSessionRuntimeCount = 0;
+let deferredSessionCreateCount = 0;
+let deferredSessionReleaseCount = 0;
+const disposeDuringSessionCreateAdapter = createOnnxRuntimePoseAdapterFromDependencies({
+  async modelLoader() {
+    deferredSessionModelLoadCount += 1;
+    return { modelBytes: new Uint8Array([1]), source: "injected" };
+  },
+  async runtimeLoader() {
+    deferredSessionRuntimeCount += 1;
+    return createFakeRuntime();
+  },
+  async sessionFactory() {
+    deferredSessionCreateCount += 1;
+    sessionCreateStarted.resolve(undefined);
+    await sessionCreateGate.promise;
+    return createReleasableSession(() => { deferredSessionReleaseCount += 1; });
+  }
+});
+const sessionLoadOne = disposeDuringSessionCreateAdapter.load();
+const sessionLoadTwo = disposeDuringSessionCreateAdapter.load();
+const sessionLoadOneRejected = assert.rejects(sessionLoadOne, /disposed.*cannot finish loading/iu);
+const sessionLoadTwoRejected = assert.rejects(sessionLoadTwo, /disposed.*cannot finish loading/iu);
+await sessionCreateStarted.promise;
+assert.equal(deferredSessionModelLoadCount, 1);
+assert.equal(deferredSessionRuntimeCount, 1);
+assert.equal(deferredSessionCreateCount, 1);
+const sessionDispose = disposeDuringSessionCreateAdapter.dispose();
+assert.equal(disposeDuringSessionCreateAdapter.status, onnxRuntimeAdapterStatuses.disposed);
+sessionCreateGate.resolve(undefined);
+await Promise.all([sessionLoadOneRejected, sessionLoadTwoRejected, sessionDispose]);
+await disposeDuringSessionCreateAdapter.dispose();
+assert.equal(deferredSessionReleaseCount, 1);
+assert.equal(disposeDuringSessionCreateAdapter.status, onnxRuntimeAdapterStatuses.disposed);
+await assert.rejects(() => disposeDuringSessionCreateAdapter.load(), /disposed.*cannot be loaded/iu);
+await assert.rejects(
+  () => disposeDuringSessionCreateAdapter.estimateNormalizedPoseFrame(/** @type {CanvasImageSource & Record<string, unknown>} */ (/** @type {unknown} */ ({ width: 480, height: 640 }))),
+  /disposed.*cannot estimate pose/iu
+);
 
 const mock = createOnnxRuntimeMockPoseAdapter();
 assertAeroPoseAdapterContract(mock, ["replay"]);
@@ -272,6 +358,47 @@ function createFakeDependencies(settings = {}) {
         };
       },
       now: createClock()
+    }
+  };
+}
+
+/** @template T @returns {{ promise: Promise<T>, resolve: (value: T) => void }} */
+function createDeferred() {
+  /** @type {((value: T) => void) | undefined} */
+  let resolvePromise;
+  const promise = new Promise((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve(value) {
+      if (!resolvePromise) {
+        throw new Error("Deferred promise was not initialized.");
+      }
+      resolvePromise(value);
+    }
+  };
+}
+
+function createFakeRuntime() {
+  class Tensor {
+    constructor(type, data, dimensions) {
+      this.type = type;
+      this.data = data;
+      this.dimensions = dimensions;
+    }
+  }
+  return { Tensor, InferenceSession: { async create() { throw new Error("unused"); } } };
+}
+
+/** @param {() => void} onRelease */
+function createReleasableSession(onRelease) {
+  return {
+    async run() {
+      return createSimccOutputs();
+    },
+    release() {
+      onRelease();
     }
   };
 }
